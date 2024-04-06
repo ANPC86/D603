@@ -1,0 +1,992 @@
+---
+title: "604 Group MLR"
+author: "Jianling Xie, Alan Cheun, Zane Wu"
+date: "2024-03-27"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Introduction
+
+Modelling Plan We will first run a First order linear regression model
+using all predictors and test the variables for multicolinearity. Once
+we have removed the variables with high multicolinearity, we will use
+step-wise regression to select a model of main effects. We will then
+perform a partial F-test to compare the full model and reduced model.
+Once we decide the main effects, we will use the individual t-test to
+check for significant higher-order terms and interactions. Then we test
+this model with another F-test to evaluate if the higher order terms and
+interactions are significant. Any significant higher-order or
+interaction terms will be added to the main effects to produce the
+finalnal model. Our model will then test for the following 6 assumptions
+as shown below:
+
+1.  Linearity Assumption - Review residual plots
+2.  Independence Assumption - Review residual against year (time)
+3.  Normality Assumption - Using Shapiro-Wilk normality test
+4.  Equal Variance Assumption (heteroscedasticity) - Using Breusch-Pagan
+    test
+5.  Multicollinearity - Using variance infation factors (VIF)
+6.  Outliers - check Cook's distance and leverage
+
+Finally, we may use the final model to do a prediction of crime at a
+specific future c-train station
+
+dependent variable: crime_rate ln_crime_rate Total_Crime_Count
+
+independent variables: Year Sectors SHORTEST_DISTANCE_TO_LRT_METERS
+SHORTEST_DISTANCE_TO_POLICE_METERS male_percentage_num
+age_75_plus_percentage_num TotalPermits
+calgary_cma_average_hourly_wage_rate_num median
+canada_unemployment_rate_num
+
+```{r}
+
+library(car)
+library(lmtest)
+library(olsrr)
+library(Ecdat)
+library(MASS)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(mctest)
+library(pastecs)
+library(psych)
+
+```
+
+# Dataset
+
+Our dataset is sourced from The City of Calgary’s Open Data Portal. It
+is the outcome of our DATA604 project to analyze Calgary Crime
+Statistics.
+
+License:
+<https://data.calgary.ca/stories/s/Open-Calgary-Terms-of-Use/u45n-7awa>
+
+```{r}
+
+data <- read.csv("https://raw.githubusercontent.com/ANPC86/D603/main/603%20crime%20dataset%20April%201%202024.csv")
+str(data)
+
+
+
+```
+
+```{r}
+data$CLASS_CODE.f = as.factor(data$CLASS_CODE)
+
+## create dependent variables: crime rate and log of crime rate
+data<- data %>%
+  mutate(
+    crime_rate = Total_Crime_Count / Avg_Resident_Count * 100000,
+    ln_crime_rate = log(crime_rate)
+  )
+
+```
+
+```{r}
+table (data$CLASS_CODE.f) # cell count for level-2 (industry) was low, it may cause problem, so decided not to include it to the model
+
+table (data$Sectors) # OK
+
+```
+
+## Check Dataset for Missing Values
+
+Check for missing values - 25\~30 with missing data
+
+```{r}
+missing_values <- colSums(is.na(data))
+
+missing_values
+
+```
+
+Using complete case analysis
+
+```{r}
+
+# Select variables and create a new dataset without missing data
+
+data_selected <- data[, c("Year",
+                          "crime_rate",
+                          "ln_crime_rate",
+                          "Total_Crime_Count", 
+                          "Avg_Resident_Count",
+                          "Sectors", 
+                          "SHORTEST_DISTANCE_TO_LRT_METERS", 
+                           "SHORTEST_DISTANCE_TO_POLICE_METERS", "male_percentage_num", 
+                           "age_75_plus_percentage_num", "TotalPermits", 
+                           "calgary_cma_average_hourly_wage_rate_num", 
+                           "median", 
+                           "CLASS_CODE.f",
+                          "canada_unemployment_rate_num")]
+
+# Remove rows with missing values
+data_complete <- na.omit(data_selected)
+
+# Print the new dataset
+str(data_complete)
+```
+
+## Test Distribution of the Dependent Variable - Crime Rate
+
+Check the distribution of the dependent variable crime rate. The crime
+rate was highly right-skewed, and applying a log transformation helped
+approximate a normal distribution.
+
+```{r}
+
+par(mfrow = c(1, 2))
+hist(data_complete$crime_rate, main='Crime rate', xlab='rate/100,000')
+hist(data_complete$ln_crime_rate,main='LN (crime rate)', xlab='rate/100,000') 
+par(mfrow = c(1, 1))
+
+describe(data_complete$ln_crime_rate)
+
+```
+
+# Fit the Additive Model 1
+
+Fit the full model with all candidate variables, and check for
+multicollinearity
+
+```{r}
+
+model1 <- lm(ln_crime_rate ~ 
+Year+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+calgary_cma_average_hourly_wage_rate_num+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model1)
+
+
+```
+
+## Check Model 1 for MultiCollinearity
+
+```{r}
+imcdiag(model1, method="VIF")
+```
+
+The variable "calgary_cma_average_hourly_wage_rate_num" has
+VIF=37.604408, p = 0.00479 The variable "Year" had VIF=38.994258,
+p=5.15e-05. So, we dropped variable
+"calgary_cma_average_hourly_wage_rate_num", re-run the reduced model,
+and test for multicollinearity again
+
+# Fit Reduced Model 2
+
+```{r}
+
+model2 <- lm(ln_crime_rate ~ 
+Year+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model2)
+
+
+```
+
+## Check Model 2 for MultiCollinearity
+
+```{r}
+imcdiag(mod = model2, method = "VIF")
+
+```
+
+In model2, all VIF's \< 5.0, suggesting moderate collinearity, but it is
+not severe enough to warrant corrective measures.
+
+Although we planned to use step-wise for selecting variables, but it is
+not necessary at this point, as in model2, the individual t-test for all
+the candidate variables had p\<0.05.
+
+# Fit Interaction Model 3
+
+So we move on the testing all possible two way interactions:
+
+```{r}
+
+model3 <- lm(ln_crime_rate ~ 
+(Year+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num)^2, data_complete)
+
+summary(model3)
+
+
+```
+
+Evaluate interaction terms significance using individual t-test.
+
+$$
+H_0:\\
+H_a:\\
+\alpha=0.05
+$$
+
+The following interaction terms had p\<0.05:
+
+Year:male_percentage_num 2.413 0.015997 \*\
+Year:TotalPermits 5.620 2.41e-08 ***Year:canada_unemployment_rate_num
+-2.091 0.036737*** **\
+SectorsEAST:SHORTEST_DISTANCE_TO_LRT_METERS -3.098 0.001995**
+SectorsNORTH:SHORTEST_DISTANCE_TO_LRT_METERS 1.966 0.049571 \*\
+SectorsSOUTH:SHORTEST_DISTANCE_TO_LRT_METERS -2.853 0.004406 \*\*
+SectorsSOUTHEAST:SHORTEST_DISTANCE_TO_LRT_METERS 2.134 0.033069 \*\
+SectorsWEST:SHORTEST_DISTANCE_TO_LRT_METERS 4.588 4.99e-06
+***SectorsEAST:SHORTEST_DISTANCE_TO_POLICE_METERS 2.662 0.007884**
+SectorsSOUTH:SHORTEST_DISTANCE_TO_POLICE_METERS 1.964 0.049782* \
+SectorsWEST:SHORTEST_DISTANCE_TO_POLICE_METERS -3.185 0.001489 \*\*
+SectorsNORTH:male_percentage_num -3.817 0.000143
+***SectorsNORTHEAST:male_percentage_num -2.897 0.003840**
+SectorsSOUTH:male_percentage_num 1.982 0.047713* \
+SectorsNORTHEAST:age_75_plus_percentage_num 2.505 0.012370 \*\
+SectorsSOUTHEAST:age_75_plus_percentage_num 4.931 9.42e-07
+***SectorsNORTH:TotalPermits -3.043 0.002396**
+SectorsNORTHEAST:TotalPermits -4.637 3.95e-06*
+**SectorsNORTHWEST:TotalPermits 3.595 0.000339**
+*SectorsSOUTHEAST:TotalPermits -3.979 7.37e-05*
+**SectorsNORTHWEST:median 4.215 2.70e-05** *SectorsSOUTH:median 5.711
+1.44e-08* **SectorsSOUTHEAST:median 3.244 0.001214**
+SHORTEST_DISTANCE_TO_LRT_METERS:SHORTEST_DISTANCE_TO_POLICE_METERS 2.026
+0.043004 \*\
+SHORTEST_DISTANCE_TO_LRT_METERS:male_percentage_num 3.571 0.000371
+***SHORTEST_DISTANCE_TO_LRT_METERS:age_75_plus_percentage_num 3.063
+0.002245** SHORTEST_DISTANCE_TO_LRT_METERS:TotalPermits 2.553 0.010821*
+\
+SHORTEST_DISTANCE_TO_POLICE_METERS:median -2.096 0.036288 \*\
+male_percentage_num:age_75_plus_percentage_num -3.287 0.001045 \*\*
+male_percentage_num:median -3.384 0.000740 \*\*
+*median:canada_unemployment_rate_num 2.062 0.039430*
+
+We will include these interaction terms in the model:
+
+Year*male_percentage_num+\
+Year*TotalPermits+\
+Year*canada_unemployment_rate_num+\
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+\
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+\
+Sectors*male_percentage_num+\
+Sectors*age_75_plus_percentage_num+\
+Sectors*TotalPermits+\
+Sectors*median+\
+SHORTEST_DISTANCE_TO_LRT_METERS*SHORTEST_DISTANCE_TO_POLICE_METERS+\
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+\
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+\
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+\
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+\
+male_percentage_num*age_75_plus_percentage_num+\
+male_percentage_num*median+\
+median\*canada_unemployment_rate_num
+
+Then we run the model with the interaction terms:
+
+```{r}
+model4 <- lm(ln_crime_rate ~ 
+Year+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Year*canada_unemployment_rate_num+                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*SHORTEST_DISTANCE_TO_POLICE_METERS+   
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median+                                          
+median*canada_unemployment_rate_num   
+  , data_complete)
+
+
+summary(model4)
+
+```
+
+Dropped the interaction terms had p\>0.05. They will be retained in the
+model. median*canada_unemployment_rate_num\
+Year*canada_unemployment_rate_num
+
+```{r}
+
+model4b <- lm(ln_crime_rate ~ 
+Year+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*SHORTEST_DISTANCE_TO_POLICE_METERS+   
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+
+summary(model4b)
+
+```
+
+Next we move on to testing higher order terms. We use the function
+pairs() to see how the response looks with respect to each independent
+variable. We look at all pairwise combinations of continuous variables
+in scatterplots.
+
+```{r}
+pairs(~ln_crime_rate +
+Year+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete, panel=panel.smooth)
+
+
+
+```
+
+It looked like there might be some concavity in the
+
+ln_crime_rate vs. Year, ln_crime_rate vs.SHORTEST_DISTANCE_TO_LRT_METERS
+ln_crime_rate vs.SHORTEST_DISTANCE_TO_POLICE_METERS
+
+We fitted a quadratic model and the linear model and see which one might
+be the best fit.
+
+```{r}
+
+model5 <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5)
+```
+
+```{r}
+model5b <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+
+I(Year^3)+    
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5b)
+```
+
+```{r}
+
+model5c <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+  
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5c)
+
+ 
+```
+
+```{r}
+model5c <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5c)
+```
+
+I(SHORTEST_DISTANCE_TO_LRT_METERS\^4) not significant
+
+```{r}
+model5d <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^4)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5d)
+```
+
+I(SHORTEST_DISTANCE_TO_POLICE_METERS\^2) NOT significant
+
+```{r}
+model5e <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+I(SHORTEST_DISTANCE_TO_POLICE_METERS^2)+  
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num, data_complete)
+
+summary(model5e)
+```
+
+Then we fit a quadratic model plus the interaction terms.
+
+```{r}
+
+model6 <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*SHORTEST_DISTANCE_TO_POLICE_METERS+   
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+summary(model6)
+
+
+
+```
+
+```{r}
+
+anova(model6, model4b)
+AIC(model6)
+AIC(model4b)
+
+```
+
+Dropped
+interaction:SHORTEST_DISTANCE_TO_LRT_METERS\*SHORTEST_DISTANCE_TO_POLICE_METERS
+
+```{r}
+model6b <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+summary(model6b)
+```
+
+```{r}
+anova(model6, model6b)
+AIC(model6)
+AIC(model6b)
+```
+
+The higher order term and the interaction terms were all significant at
+alpha=0.05. This would be the final addictive model. We then run a
+F-test for comparing model2 vs model6b.
+
+$$
+H_0:\\
+H_a:\\
+\alpha=0.05
+$$
+
+```{r}
+
+anova (model2, model6b)
+
+```
+
+The $F_{cal}$=14.457, p \< 2.2e-16, reject $H_0$ that there was no
+difference between model2 and model 6
+
+Do we need to report any ANOVA Table ?
+
+```{r}
+
+df <- data.frame(
+  Source_of_variation = c("Regression", "Residual", "Total"),
+  DF = c(53, 1152, 1205),
+  Sum_of_square = c(177.31, 220.51, 177.31 + 220.51),
+  Mean_square = c(round(177.31/53,2), round(220.51/1152,2), ""),
+  F = c(14.457, " ", " "),
+  P_value = c("<2.2e-16", " ", " ")
+)
+
+kable(df, format = "html", align = "c", escape = FALSE) %>%
+  kable_styling(full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "ANOVA Table" = 5))
+
+```
+
+Model6b would be the final additive model,
+
+Next we will check model assumptions:
+
+1.  Linearity Assumption - Review residual plots (histogram and residual
+    vs. fitted values)
+
+The residual plots shows no discernible pattern.
+
+```{r}
+plot(model6b, which=1)
+hist(model6b$residual, breaks=25)
+
+```
+
+2.  Independence Assumption - Review residual against year (time), and
+    residual against year spatial variable (sectors)
+
+```{r}
+plot(data_complete$Year, model6b$residual, 
+     xlab="Year of assessment") ## no discernible pattern over years?
+
+boxplot(model6b$residual ~ data_complete$Sectors, 
+        xlab="Sector") ## no discernible pattern across sectors?
+
+boxplot(model6b$residual ~ data_complete$Year, 
+        xlab="Year") 
+
+
+
+```
+
+3.  Normality Assumption - Using Shapiro-Wilk normality test; and normal
+    qq plot, and histogram of residual
+
+$$
+H_0:\\
+H_a:\\
+\alpha=0.05
+$$
+
+```{r}
+hist(model6b$residual, breaks=25)
+
+plot(model6b, which=2) ## deviation at the tails 
+
+shapiro.test(residuals(model6b)) ## not met
+
+```
+
+4.  Equal Variance Assumption (heteroscedasticity) - Using Breusch-Pagan
+    test residual vs. fitted value plots
+
+$$
+H_0:\\
+H_a:\\
+\alpha=0.05
+$$
+
+```{r}
+
+
+plot(model6b, which=1)
+
+plot(model6b, which=3) ## the scale location plot showed a bit the variation of residuals decreases as fitted value increased; the line was quite straight. But it did not pass the bp test. To consult instructor, do we still need to do any data manipulation ?
+
+
+bptest(model6) ## did not pass
+
+```
+
+5.  Multicollinearity - Using variance inflation factors (VIF)
+
+To confirm with instructor: when testing for multicollinearity, we don't
+include interaction terms and squared terms, so the model used to test
+for multicollinearity would be model2, in which there were no variables
+with VIF\>5.
+
+```{r}
+# imcdiag(model6b, method="VIF")
+imcdiag(model2, method="VIF")
+
+```
+
+6.  Outliers - check Cook's distance and leverage
+
+```{r}
+plot (model6b, which=4) ## there was no outliers identified by Cook's distance >0.5
+plot (model6b, which=5)
+plot (model6b, which=6)
+
+
+## leverage points
+
+lev=hatvalues(model6b)
+p = length(coef(model6b)) # 69
+n = nrow(data_complete) # 1221
+outlier2p = lev[lev>(2*p/n)]
+outlier3p = lev[lev>(3*p/n)]
+print("h_I>2p/n, outliers are")
+outlier3p
+
+# outlier2p = 2*69/1221 = 0.1130221
+# outlier3p = 3*69/1221 = 0.1695332
+
+```
+
+Try to remove outlier3p and re-run model
+
+```{r}
+
+data_complete$lev <- hatvalues(model6b) 
+
+data_complete_out <- data_complete[data_complete$lev<=0.1695332,]
+  
+```
+
+```{r}
+
+
+model7 <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete_out)
+
+summary(model7)
+
+plot(model7, which=1)
+plot(model7, which=2)
+plot(model7, which=3) # improved
+shapiro.test(residuals(model7)) ## still not pass
+bptest(model7)  ## still not pass
+
+```
+
+We have done the log transformation but still did not pass the
+shapiro.test and bp test. boxcox is unlikely to help. Is Boxcox
+transformation is still required? is the transformation performed on the
+crime rate prior to log. But neither is helpful to pass the shapiro.test
+and bp test.
+
+```{r}
+bc=boxcox(model6b,lambda=seq(-5,5))
+bestlambda=bc$x[which(bc$y==max(bc$y))]
+bestlambda ## 1.161616
+
+```
+
+```{r}
+model8 <- lm((((ln_crime_rate^(1.161616))-1)/(1.161616)) ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+summary(model8)
+plot(model8, which=1)
+plot(model8, which=2)
+plot(model8, which=3)
+shapiro.test(residuals(model8))
+bptest(model8)
+
+```
+
+Try Boxcox on the raw crime rate
+
+```{r}
+model9 <- lm(crime_rate~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+summary(model9)
+plot(model9, which=1)
+plot(model9, which=2)
+plot(model9, which=3)
+shapiro.test(residuals(model9))
+bptest(model9)
+
+```
+
+```{r}
+bc=boxcox(model9,lambda=seq(-5,5))
+bestlambda=bc$x[which(bc$y==max(bc$y))]
+bestlambda ## 0.05050505
+```
+
+```{r}
+model8 <- lm((((crime_rate^(0.05050505))-1)/(0.05050505)) ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete)
+
+
+summary(model10)
+plot(model10, which=1)
+plot(model10, which=2)
+plot(model10, which=3)
+shapiro.test(residuals(model10))
+bptest(model10)
+```
+
+```{r}
+# review : 304 crime count =1.
+```
+
+```{r}
+
+data_complete_rm304 <- data_complete[data_complete$Total_Crime_Count>1,]
+
+```
+
+```{r}
+model11 <- lm(ln_crime_rate ~ 
+Year+
+I(Year^2)+  
+Sectors+
+SHORTEST_DISTANCE_TO_LRT_METERS+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^2)+
+I(SHORTEST_DISTANCE_TO_LRT_METERS^3)+   
+SHORTEST_DISTANCE_TO_POLICE_METERS+
+male_percentage_num+
+age_75_plus_percentage_num+
+TotalPermits+
+median+
+canada_unemployment_rate_num+
+Year*male_percentage_num+                                            
+Year*TotalPermits+                                                   
+Sectors*SHORTEST_DISTANCE_TO_LRT_METERS+                         
+Sectors*SHORTEST_DISTANCE_TO_POLICE_METERS+                      
+Sectors*male_percentage_num+                                    
+Sectors*age_75_plus_percentage_num+                         
+Sectors*TotalPermits+                                           
+Sectors*median+                                             
+SHORTEST_DISTANCE_TO_LRT_METERS*male_percentage_num+                  
+SHORTEST_DISTANCE_TO_LRT_METERS*age_75_plus_percentage_num+           
+SHORTEST_DISTANCE_TO_LRT_METERS*TotalPermits+                         
+SHORTEST_DISTANCE_TO_POLICE_METERS*median+                           
+male_percentage_num*age_75_plus_percentage_num+                      
+male_percentage_num*median, data_complete_rm304)
+
+
+summary(model11)
+plot(model11, which=1)
+plot(model11, which=2)
+plot(model11, which=3)
+shapiro.test(residuals(model11)) # not pass
+bptest(model11) # not pass
+
+```
+
+\`\`\`
